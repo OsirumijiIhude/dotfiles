@@ -1,0 +1,12 @@
+[Unit]
+Description=Microphone/camera usage monitor (waybar privacy dot + history)
+After=pipewire.service pipewire-pulse.service
+Wants=pipewire-pulse.service
+
+[Service]
+ExecStart=%h/.local/bin/privacy-monitor
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

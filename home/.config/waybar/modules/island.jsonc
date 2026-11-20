@@ -1,0 +1,40 @@
+// Media island (~/.local/bin/waybar-island): waveform, song and controls for whatever is playing.
+// Hidden when nothing is playing or paused. Styled in ../user-style.css.
+{
+    "custom/island": {
+        "exec": "waybar-island",
+        "return-type": "json",
+        "escape": false,
+        "restart-interval": 3,
+        "hide-empty-text": true,
+        "tooltip": true,
+        "on-click": "waybar-island focus",
+        "on-click-middle": "waybar-island do play-pause",
+        "on-scroll-up": "waybar-island do previous",
+        "on-scroll-down": "waybar-island do next"
+    },
+    "custom/island-prev": {
+        "exec": "waybar-island button prev",
+        "return-type": "json",
+        "interval": "once",
+        "signal": 14,
+        "tooltip": true,
+        "on-click": "waybar-island do previous"
+    },
+    "custom/island-toggle": {
+        "exec": "waybar-island button toggle",
+        "return-type": "json",
+        "interval": "once",
+        "signal": 14,
+        "tooltip": true,
+        "on-click": "waybar-island do play-pause"
+    },
+    "custom/island-next": {
+        "exec": "waybar-island button next",
+        "return-type": "json",
+        "interval": "once",
+        "signal": 14,
+        "tooltip": true,
+        "on-click": "waybar-island do next"
+    }
+}

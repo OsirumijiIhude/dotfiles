@@ -1,0 +1,7 @@
+/* Colours for the media island, written by ~/.local/bin/waybar-island from the album art. */
+@define-color island-accent #d6a785;
+@define-color island-on-accent #11111b;
+@define-color island-bg mix(@main-bg, @island-accent, 0.16);
+
+window#waybar #pill { background-color: mix(@main-bg, @island-accent, 0.10); border-color: mix(@main-bg, @island-accent, 0.10); }
+#workspaces button.active { background: @island-accent; color: @island-on-accent; }

@@ -1,0 +1,45 @@
+@import "island-theme.css";   /* the media island's artwork colours (waybar-island) */
+
+/* User custom styles */
+
+/* Privacy indicator: its own pill, only drawn while the camera/mic is in use
+   (the module is hidden entirely when idle). Sits close to the clock pill. */
+window#waybar #custom-privacy {
+    background-color: @main-bg;
+    border-radius: 10pt;
+    padding: 0 0.9em;
+    margin: 0.3em 0 0.3em -0.6em;
+}
+
+/* like heart for the current wallpaper (wall-like) */
+window#waybar #custom-walllike.liked { color: #f38ba8; }
+/* caffeine (replaces waybar's idle_inhibitor, see ~/.local/bin/caffeine) */
+window#waybar #custom-caffeine.activated { color: #a6e3a1; }
+
+/* Media island (~/.local/bin/waybar-island): one pill after the workspaces, made of four modules
+   so each control can be clicked. They all disappear together when nothing is playing. */
+window#waybar #custom-island,
+window#waybar #custom-island-prev,
+window#waybar #custom-island-toggle,
+window#waybar #custom-island-next {
+    background-color: @island-bg;
+    margin: 0.3em 0;
+    padding: 0 0.35em;
+    min-height: 32px;                   /* as tall as the other pills, so the bar never changes height */
+    transition: background-color 0.6s ease, color 0.3s ease;
+}
+window#waybar #custom-island {
+    border-radius: 10pt 0 0 10pt;
+    margin-left: 0.2em;
+    padding-left: 0.9em;
+    padding-right: 0.4em;
+}
+window#waybar #custom-island-prev { padding-left: 0.5em; }
+window#waybar #custom-island-next {
+    border-radius: 0 10pt 10pt 0;
+    padding-right: 0.9em;
+}
+window#waybar #custom-island-prev:hover,
+window#waybar #custom-island-toggle:hover,
+window#waybar #custom-island-next:hover { color: @island-accent; }
+window#waybar #custom-island-toggle { font-size: 12px; }

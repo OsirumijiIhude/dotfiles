@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Random quote from ~/.local/share/quotes/<set>.txt (lines: Source|Text).
+#   quote --pick                 print a random index for the tech set (pins one quote per terminal)
+#   quote --line N [WIDTH]       wrapped line N of tech quote $QUOTE_INDEX, for fastfetch rows
+#                                (line 1 bare, later lines indented to align under it)
+#   quote --lock                 lock screen: song if music is playing, otherwise a Bible verse,
+#                                one verse per hyprlock session
+#   quote [SET]                  print a random quote from SET (default tech)
+
+dir="${XDG_DATA_HOME:-$HOME/.local/share}/quotes"
+
+load() { mapfile -t items < <(grep -v '^\s*#' "$dir/$1.txt" 2>/dev/null | grep '|'); n=${#items[@]}; }
+
+render() { # index width -> wrapped "text — source"
+    local v="${items[$1]}" src nb=$' '
+    src="${v%%|*}"
+    # non-breaking spaces keep "— Source" together when wrapping
+    printf '%s%s—%s%s\n' "${v#*|}" "$nb" "$nb" "${src// /$nb}" | fold -s -w "$2" | sed 's/ *$//'
+}
+
+case "${1:-}" in
+--pick)
+    load tech; [ "$n" -gt 0 ] && echo $((RANDOM % n))
+    ;;
+--line)
+    # fastfetch header rows: quote wrapped, author on the same line as the end
+    # of the quote; wrapped lines indented under the first.
+    load tech; [ "$n" -gt 0 ] || exit 0
+    v="${items[$(( ${QUOTE_INDEX:-0} % n ))]}"
+    mapfile -t rows < <(printf '%s\n' "${v#*|}" | fold -s -w "${3:-58}" | sed 's/ *$//')
+    rows[-1]="${rows[-1]} — ${v%%|*}"
+    i=$(( ${2:-1} - 1 ))
+    [ "$i" -lt "${#rows[@]}" ] || exit 0
+    if [ "$i" -eq 0 ]; then echo "  󰝗  ${rows[0]}"; else echo "     ${rows[$i]}"; fi
+    ;;
+--lock)
+    if player="$(playerctl -l 2>/dev/null | tail -n1)" && [ -n "$player" ] &&
+        [ "$(playerctl -p "$player" status 2>/dev/null)" = "Playing" ]; then
+        exec hyde-shell hyprlock.sh --mpris "$player"
+    fi
+    load bible-kjv; [ "$n" -gt 0 ] || exit 0
+    lock_pid="$(pgrep -nx hyprlock)"
+    state="${XDG_RUNTIME_DIR:-/tmp}/lock-quote.$UID"
+    if [ -n "$lock_pid" ] && [ -r "$state" ] && [ "$(head -n1 "$state")" = "$lock_pid" ]; then
+        idx="$(sed -n 2p "$state")"
+    else
+        idx=$((RANDOM % n))
+        printf '%s\n%s\n' "$lock_pid" "$idx" >"$state"
+    fi
+    render "$idx" 100   # at most 2 lines; the label sits just under the password box
+    ;;
+*)
+    load "${1:-tech}"; [ "$n" -gt 0 ] && render "$((RANDOM % n))" "${COLUMNS:-80}"
+    ;;
+esac

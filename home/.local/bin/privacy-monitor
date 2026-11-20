@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Microphone / camera usage monitor (runs as privacy-monitor.service).
+
+Every 2 s it checks:
+  * microphone: PipeWire/Pulse recording streams on real input sources
+    (".monitor" sources = recording speaker output, not the mic, are ignored)
+  * camera: processes holding /dev/video* open (direct V4L2 apps, e.g. Chrome,
+    Zoom, OBS) plus PipeWire video streams (portal/PipeWire camera apps)
+
+It writes the live state for the waybar privacy dot to
+  $XDG_RUNTIME_DIR/privacy/state.json
+and appends finished sessions to
+  ~/.local/share/privacy-monitor/sessions.jsonl   ({kind, app, start, end})
+Ongoing sessions are checkpointed so a crash/reboot loses at most a few seconds.
+History older than 60 days is pruned.
+"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+POLL = 2.0
+RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "privacy")
+DATA = os.path.join(os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")), "privacy-monitor")
+STATE = os.path.join(RUNTIME, "state.json")
+LOG = os.path.join(DATA, "sessions.jsonl")
+OPEN = os.path.join(DATA, "open.json")  # checkpoint of ongoing sessions
+KEEP_DAYS = 60
+# PipeWire's own daemons hold camera nodes on behalf of apps; attribute via streams instead
+IGNORE_CAMERA_COMM = {"pipewire", "wireplumber", "pipewire-media-session"}
+
+
+def run_json(cmd):
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
+        return json.loads(out) if out.strip() else []
+    except Exception:
+        return []
+
+
+def proc_name(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            argv0 = f.read().split(b"\0")[0].decode(errors="replace")
+        name = os.path.basename(argv0) or ""
+    except OSError:
+        name = ""
+    if not name or len(name) > 40:
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                name = f.read().strip()
+        except OSError:
+            name = f"pid {pid}"
+    return name
+
+
+def pretty(name):
+    n = (name or "unknown").strip()
+    low = n.lower()
+    for key, nice in (("chrome", "Google Chrome"), ("chromium", "Chromium"), ("firefox", "Firefox"),
+                      ("zoom", "Zoom"), ("discord", "Discord"), ("vesktop", "Discord (Vesktop)"),
+                      ("obs", "OBS Studio"), ("teams", "Microsoft Teams"), ("slack", "Slack"),
+                      ("brave", "Brave"), ("signal", "Signal"), ("telegram", "Telegram")):
+        if key in low:
+            return nice
+    return n
+
+
+def mic_users():
+    sources = {s.get("index"): s.get("name", "") for s in run_json(["pactl", "-f", "json", "list", "sources"])}
+    users = set()
+    for so in run_json(["pactl", "-f", "json", "list", "source-outputs"]):
+        props = so.get("properties", {})
+        src = sources.get(so.get("source"), "")
+        if src.endswith(".monitor"):
+            continue
+        if props.get("stream.monitor") == "true" or props.get("application.id") == "org.PulseAudio.pavucontrol":
+            continue  # level meters (pavucontrol/cava) are not recordings
+        name = props.get("application.name") or props.get("application.process.binary") or "unknown"
+        users.add(pretty(name))
+    return users
+
+
+def cameras_maybe_on():
+    """Cheap gate: USB cameras sit in runtime-suspend until something opens them.
+    Only if a camera is awake (or its state is unknown) do we do the full scan."""
+    import glob
+    states = []
+    for dev in glob.glob("/sys/class/video4linux/video*"):
+        try:
+            with open(os.path.join(dev, "device", "..", "power", "runtime_status")) as f:
+                states.append(f.read().strip())
+        except OSError:
+            return True  # unknown (e.g. non-USB camera): be safe and scan
+    return any(s != "suspended" for s in states)
+
+
+def camera_users():
+    users = set()
+    if not cameras_maybe_on():
+        return users
+    # 1) direct V4L2 access
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(f"{fd_dir}/{fd}")
+            except OSError:
+                continue
+            if target.startswith("/dev/video"):
+                name = proc_name(pid)
+                if name not in IGNORE_CAMERA_COMM:
+                    users.add(pretty(name))
+                break
+    # 2) PipeWire camera streams (apps using the camera through PipeWire / portal)
+    nodes = run_json(["pw-dump"])
+    running_cam = any(
+        n.get("type") == "PipeWire:Interface:Node"
+        and (n.get("info", {}).get("props", {}).get("media.class") == "Video/Source")
+        and n.get("info", {}).get("state") == "running"
+        and n.get("info", {}).get("props", {}).get("device.api") == "v4l2"
+        for n in nodes)
+    if running_cam:
+        for n in nodes:
+            props = n.get("info", {}).get("props", {}) if n.get("type") == "PipeWire:Interface:Node" else {}
+            if props.get("media.class") == "Stream/Input/Video":
+                users.add(pretty(props.get("application.name") or props.get("application.process.binary")))
+        if not users:
+            users.add("unknown (via PipeWire)")
+    return users
+
+
+def load_open():
+    try:
+        with open(OPEN) as f:
+            return {tuple(k.split("\t", 1)): v for k, v in json.load(f).items()}
+    except Exception:
+        return {}
+
+
+def save_open(open_sessions, now):
+    tmp = OPEN + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({f"{k}\t{a}": {"start": v["start"], "seen": now} for (k, a), v in open_sessions.items()}, f)
+    os.replace(tmp, OPEN)
+
+
+def log_session(kind, app, start, end):
+    if end - start < 1:
+        return
+    with open(LOG, "a") as f:
+        f.write(json.dumps({"kind": kind, "app": app, "start": round(start, 1), "end": round(end, 1)}) + "\n")
+
+
+def prune():
+    cutoff = time.time() - KEEP_DAYS * 86400
+    try:
+        with open(LOG) as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    keep = [l for l in lines if json.loads(l).get("end", 0) >= cutoff]
+    if len(keep) != len(lines):
+        with open(LOG + ".tmp", "w") as f:
+            f.writelines(keep)
+        os.replace(LOG + ".tmp", LOG)
+
+
+def write_state(active):
+    state = {"mic": sorted(a for k, a in active if k == "mic"),
+             "camera": sorted(a for k, a in active if k == "camera"),
+             "updated": time.time()}
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, STATE)
+
+
+def signal_waybar():
+    subprocess.run(["pkill", "-RTMIN+9", "-x", "waybar"], capture_output=True)
+
+
+def main():
+    os.makedirs(RUNTIME, exist_ok=True)
+    os.makedirs(DATA, exist_ok=True)
+    prune()
+    # close sessions left open by a previous run at their last checkpoint
+    for (kind, app), v in load_open().items():
+        log_session(kind, app, v["start"], v.get("seen", v["start"]))
+    open_sessions = {}
+    last_active = None
+    stop = False
+
+    def on_term(*_):
+        nonlocal stop
+        stop = True
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+
+    last_prune = time.time()
+    while not stop:
+        now = time.time()
+        active = {("mic", a) for a in mic_users()} | {("camera", a) for a in camera_users()}
+        for key in active - open_sessions.keys():
+            open_sessions[key] = {"start": now}
+        for key in set(open_sessions) - active:
+            log_session(key[0], key[1], open_sessions.pop(key)["start"], now)
+        save_open(open_sessions, now)
+        write_state(active)
+        if active != last_active:
+            signal_waybar()
+            last_active = active
+        if now - last_prune > 86400:
+            prune()
+            last_prune = now
+        time.sleep(POLL)
+
+    now = time.time()
+    for (kind, app), v in open_sessions.items():
+        log_session(kind, app, v["start"], now)
+    save_open({}, now)
+    write_state(set())
+    signal_waybar()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

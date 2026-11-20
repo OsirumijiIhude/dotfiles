@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Puts my configs in place on a machine with HyDE installed: links each file listed in FILES from
+# this repo into $HOME, so later edits land in the repo (then ./sync is only needed for new files).
+# Anything already there is moved aside first, to <name>.before-dotfiles. Run: ./install
+set -euo pipefail
+cd "$(dirname "$0")"
+repo=$(pwd)
+while read -r path; do
+    [[ -z "$path" || "$path" == \#* ]] && continue
+    [ -f "home/$path" ] || continue
+    target="$HOME/$path"
+    mkdir -p "$(dirname "$target")"
+    if [ -e "$target" ] && [ ! -L "$target" ]; then mv "$target" "$target.before-dotfiles"; fi
+    ln -sfn "$repo/home/$path" "$target"
+    echo "linked $path"
+done < FILES
+systemctl --user daemon-reload 2>/dev/null || true
+echo "Done. Log out and back in (or run: hyprctl reload) to see everything."

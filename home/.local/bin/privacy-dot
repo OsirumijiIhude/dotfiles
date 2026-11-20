@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Waybar privacy indicator (custom/privacy): green camera icon / orange mic icon.
+# Hidden when nothing is recording. If the monitor's state is missing or stale,
+# (re)start privacy-monitor.service so the indicator can't silently die.
+state="${XDG_RUNTIME_DIR:-/run/user/$UID}/privacy/state.json"
+
+if [ ! -s "$state" ] || [ $(( $(date +%s) - $(stat -c %Y "$state") )) -gt 10 ]; then
+    systemctl --user start privacy-monitor.service >/dev/null 2>&1
+    echo '{"text":"<span color=\"#ff453a\">●</span>","tooltip":"Privacy monitor not running — restarting it","class":"error"}'
+    exit 0
+fi
+
+jq -c '
+  def names: join(", ");
+  (.mic | length > 0) as $m | (.camera | length > 0) as $c |
+  if ($m or $c) then
+    { text: ([ (if $c then "<span color=\"#30d158\">󰄀</span>" else empty end),
+              (if $m then "<span color=\"#ff9f0a\">󰍬</span>" else empty end) ] | join(" ")),
+      tooltip: ([ (if $c then "📷 Camera: " + (.camera | names) else empty end),
+                  (if $m then "🎙 Microphone: " + (.mic | names) else empty end),
+                  "Click for history" ] | join("\n")),
+      class: (if $m and $c then "both" elif $c then "camera" else "mic" end) }
+  else { text: "", tooltip: "", class: "idle" } end' "$state"
